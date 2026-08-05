@@ -30,6 +30,7 @@ import swat
 import swat.utils.testing as tm
 import sys
 import unittest
+from swat.cas.rest.connection import REST_CASConnection
 from swat.exceptions import SWATError
 import uuid
 
@@ -1370,6 +1371,204 @@ class TestConnectionInfo(tm.TestCase):
                                      'myuserid', 'mytoken', 'http', None)
         self.assertEqual(out, ('cas-server-1.com', 12345,
                                'myuserid', 'mytoken', 'cas'))
+
+    def test_ipv6_http_connection_info(self):
+        c = swat.CAS
+
+        out = c._get_connection_info('2001:db8::1', 12345,
+                                     'myuserid', 'mytoken', 'http', None)
+        self.assertEqual(out, ('http://[2001:db8::1]:12345', 12345,
+                               'myuserid', 'mytoken', 'http'))
+
+        out = c._get_connection_info('2001:db8::1/cas-server/base', 12345,
+                                     'myuserid', 'mytoken', 'http', None)
+        self.assertEqual(out, ('http://[2001:db8::1]:12345/cas-server/base', 12345,
+                               'myuserid', 'mytoken', 'http'))
+
+        out = c._get_connection_info('http://[2001:db8::1]:8777/cas-server/base', 12345,
+                                     'myuserid', 'mytoken', 'http', None)
+        self.assertEqual(out, ('http://[2001:db8::1]:8777/cas-server/base', 8777,
+                               'myuserid', 'mytoken', 'http'))
+
+        out = c._get_connection_info(['2001:db8::1', '2001:db8::2'], 12345,
+                                     'myuserid', 'mytoken', 'http', None)
+        self.assertEqual(out, ('http://[2001:db8::1]:12345 '
+                               'http://[2001:db8::2]:12345', 12345,
+                               'myuserid', 'mytoken', 'http'))
+
+        out = c._get_connection_info('2001:db8::1', 5570,
+                                     'myuserid', 'mytoken', 'cas', None)
+        self.assertEqual(out, ('[2001:db8::1]', 5570,
+                               'myuserid', 'mytoken', 'cas'))
+
+        out = c._get_connection_info('::1', 5570,
+                                     'myuserid', 'mytoken', 'cas', None)
+        self.assertEqual(out, ('[::1]', 5570,
+                               'myuserid', 'mytoken', 'cas'))
+
+        out = c._get_connection_info('[2001:db8::1]', 5570,
+                                     'myuserid', 'mytoken', 'cas', None)
+        self.assertEqual(out, ('[2001:db8::1]', 5570,
+                               'myuserid', 'mytoken', 'cas'))
+
+        out = c._get_connection_info('[2001:db8::1]', 5570,
+                                     'myuserid', 'mytoken', 'auto', None)
+        self.assertEqual(out, ('[2001:db8::1]', 5570,
+                               'myuserid', 'mytoken', 'cas'))
+
+    def test_rest_ipv6_baseurl(self):
+        original_connect = REST_CASConnection._connect
+
+        def _mock_connect(self, session=None, locale=None, wait_until_idle=True):
+            return
+
+        REST_CASConnection._connect = _mock_connect
+
+        try:
+            conn = REST_CASConnection('2001:db8::1', 8777,
+                                      'myuserid', 'mypassword',
+                                      'protocol=http', None)
+            self.assertEqual(conn._baseurl, ['http://[2001:db8::1]:8777/'])
+            self.assertEqual(conn._hostname, ['2001:db8::1'])
+
+            conn = REST_CASConnection('[2001:db8::1]/cas-server/base', 8777,
+                                      'myuserid', 'mypassword',
+                                      'protocol=http', None)
+            self.assertEqual(conn._baseurl,
+                             ['http://[2001:db8::1]:8777/cas-server/base/'])
+            self.assertEqual(conn._hostname, ['2001:db8::1'])
+        finally:
+            REST_CASConnection._connect = original_connect
+
+    def test_rest_ipv6_host_port(self):
+        original_connect = REST_CASConnection._connect
+
+        def _mock_connect(self, session=None, locale=None, wait_until_idle=True):
+            return
+
+        REST_CASConnection._connect = _mock_connect
+
+        try:
+            conn = REST_CASConnection(
+                '::1',
+                12345,
+                'myuserid',
+                'mypassword',
+                'protocol=http',
+                None
+            )
+
+            self.assertEqual(
+                conn._baseurl,
+                ['http://[::1]:12345/']
+            )
+
+            self.assertEqual(
+                conn._hostname,
+                ['::1']
+            )
+
+        finally:
+            REST_CASConnection._connect = original_connect
+
+    def test_rest_ipv6_inherit_port(self):
+        original_connect = REST_CASConnection._connect
+
+        def _mock_connect(self, session=None, locale=None, wait_until_idle=True):
+            return
+
+        REST_CASConnection._connect = _mock_connect
+
+        try:
+            conn = REST_CASConnection(
+                '[::1] [2001:db8::1]',
+                123,
+                'myuserid',
+                'mypassword',
+                'protocol=http',
+                None
+            )
+
+            self.assertEqual(
+                conn._baseurl,
+                [
+                    'http://[::1]:123/',
+                    'http://[2001:db8::1]:123/'
+                ]
+            )
+
+            self.assertEqual(
+                conn._hostname,
+                [
+                    '::1',
+                    '2001:db8::1'
+                ]
+            )
+
+        finally:
+            REST_CASConnection._connect = original_connect
+
+    def test_rest_ipv6_zone_id(self):
+        original_connect = REST_CASConnection._connect
+
+        def _mock_connect(self, session=None, locale=None, wait_until_idle=True):
+            return
+
+        REST_CASConnection._connect = _mock_connect
+
+        try:
+            conn = REST_CASConnection(
+                'fe80::1%25eth0',
+                12345,
+                'myuserid',
+                'mypassword',
+                'protocol=http',
+                None
+            )
+
+            self.assertEqual(
+                conn._baseurl,
+                ['http://[fe80::1%25eth0]:12345/']
+            )
+
+            self.assertEqual(
+                conn._hostname,
+                ['fe80::1%25eth0']
+            )
+
+        finally:
+            REST_CASConnection._connect = original_connect
+
+    def test_rest_ipv6_zone_id_bracketed(self):
+        original_connect = REST_CASConnection._connect
+
+        def _mock_connect(self, session=None, locale=None, wait_until_idle=True):
+            return
+
+        REST_CASConnection._connect = _mock_connect
+
+        try:
+            conn = REST_CASConnection(
+                '[fe80::1%25eth0]',
+                12345,
+                'myuserid',
+                'mypassword',
+                'protocol=http',
+                None
+            )
+
+            self.assertEqual(
+                conn._baseurl,
+                ['http://[fe80::1%25eth0]:12345/']
+            )
+
+            self.assertEqual(
+                conn._hostname,
+                ['fe80::1%25eth0']
+            )
+
+        finally:
+            REST_CASConnection._connect = original_connect
 
 
 if __name__ == '__main__':
