@@ -1371,6 +1371,59 @@ class TestConnectionInfo(tm.TestCase):
         self.assertEqual(out, ('cas-server-1.com', 12345,
                                'myuserid', 'mytoken', 'cas'))
 
+    def test_oauth_token_request_with_tenant_id(self):
+        try:
+            from unittest import mock
+        except ImportError:
+            self.skipTest('unittest.mock is not available')
+
+        tenant_id = 'dummy-tenant-id'
+        authcode = 'dummy-authcode'
+        base_url = 'https://viya.example.com'
+
+        mock_resp = mock.MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'access_token': 'fake-token'}
+
+        mock_sess = mock.MagicMock()
+        mock_sess.headers = {}
+        mock_sess.post.return_value = mock_resp
+        mock_sess.__enter__.return_value = mock_sess
+
+        with mock.patch('requests.Session', return_value=mock_sess):
+            token = swat.CAS._get_token(authcode=authcode, url=base_url,
+                                        tenant_id=tenant_id)
+
+        self.assertEqual(token, 'fake-token')
+        self.assertEqual(mock_sess.headers.get('SAS-Tenant-Id'), tenant_id)
+
+        args, kwargs = mock_sess.post.call_args
+        self.assertTrue(args[0].endswith('/SASLogon/oauth/token'))
+        self.assertIn('grant_type=authorization_code', kwargs['data'])
+
+    def test_oauth_token_request_without_tenant_id(self):
+        try:
+            from unittest import mock
+        except ImportError:
+            self.skipTest('unittest.mock is not available')
+
+        authcode = 'dummy-authcode'
+        base_url = 'https://viya.example.com'
+
+        mock_resp = mock.MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'access_token': 'fake-token'}
+
+        mock_sess = mock.MagicMock()
+        mock_sess.headers = {}
+        mock_sess.post.return_value = mock_resp
+        mock_sess.__enter__.return_value = mock_sess
+
+        with mock.patch('requests.Session', return_value=mock_sess):
+            swat.CAS._get_token(authcode=authcode, url=base_url, tenant_id=None)
+
+        self.assertNotIn('SAS-Tenant-Id', mock_sess.headers)
+
 
 if __name__ == '__main__':
     tm.runtests()

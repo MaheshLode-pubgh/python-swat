@@ -260,7 +260,7 @@ class TestConfig(tm.TestCase):
                           'dataset', 'debug', 'exception_on_severity',
                           'hostname', 'missing',
                           'pkce', 'port', 'print_messages', 'protocol',
-                          'reflection_levels', 'ssl_ca_list', 'token',
+                          'reflection_levels', 'ssl_ca_list', 'tenant_id', 'token',
                           'trace_actions', 'trace_ui_actions', 'username'])
 
         with self.assertRaises(SWATOptionError):
