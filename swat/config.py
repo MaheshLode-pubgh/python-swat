@@ -202,6 +202,13 @@ register_option('cas.pkce', 'boolean', check_boolean, False,
                 'be used to obtain an authorization code.',
                 environ=['CAS_PKCE', 'VIYA_PKCE'])
 
+register_option('cas.tenant_id', 'string', check_string, '',
+                'Specifies the UUID of the tenant to use when authenticating\n'
+                'with SASLogon in a multi-tenant deployment. The value is\n'
+                'sent as the SAS-Tenant-Id HTTP header during OAuth token\n'
+                'requests.',
+                environ=['CAS_TENANT_ID', 'CAS_TENANT_UUID'])
+
 
 def get_default_cafile():
     ''' Retrieve the default CA file in the ssl module '''
