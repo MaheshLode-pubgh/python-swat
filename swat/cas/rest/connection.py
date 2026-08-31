@@ -24,6 +24,7 @@ Class for creating REST CAS sessions
 from __future__ import print_function, division, absolute_import, unicode_literals
 
 import base64
+import ipaddress
 import json
 import os
 import re
@@ -165,6 +166,35 @@ def _normalize_list(items):
     return newitems
 
 
+def _is_ipv6_literal(value):
+    ''' Is the value an IPv6 address literal? '''
+    if not value:
+        return False
+
+    try:
+        ipaddress.IPv6Address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_hostname(hostname):
+    ''' Normalize bracketed hostnames to plain host text '''
+    if hostname and hostname.startswith('[') and hostname.endswith(']'):
+        return hostname[1:-1]
+    return hostname
+
+
+def _format_hostname_for_url(hostname):
+    ''' Ensure IPv6 hostnames are bracketed in URL text '''
+    hostname = _normalize_hostname(hostname)
+
+    if _is_ipv6_literal(hostname):
+        return '[%s]' % hostname
+
+    return hostname
+
+
 class SSLContextAdapter(requests.adapters.HTTPAdapter):
     ''' HTTPAdapter that uses the default SSL context on the machine '''
 
@@ -257,8 +287,10 @@ class REST_CASConnection(object):
                 # If host contains a path, split them apart first
                 if '/' in host:
                     host, path = host.split('/', 1)
+                host = _normalize_hostname(host)
+                url_host = _format_hostname_for_url(host)
                 # Rebuild URL from pieces
-                self._baseurl.append('%s://%s:%d' % (protocol, host, port))
+                self._baseurl.append('%s://%s:%d' % (protocol, url_host, port))
                 if path:
                     self._baseurl[-1] = self._baseurl[-1] + '/' + path
                 self._hostname.append(host)

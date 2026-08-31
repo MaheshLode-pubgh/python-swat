@@ -26,6 +26,7 @@ from __future__ import print_function, division, absolute_import, unicode_litera
 import collections
 import contextlib
 import copy
+import ipaddress
 import inspect
 import itertools
 import json
@@ -137,6 +138,80 @@ def _lower_parmlist_keys(parmlist):
         if 'exemplar' in parm:
             parm['exemplar'] = _lower_parmlist_keys(parm['exemplar'])
     return parmlist
+
+
+def _is_ipv6_literal(value):
+    ''' Is the value an IPv6 address literal? '''
+    if not value:
+        return False
+
+    if value.startswith('[') and value.endswith(']'):
+        value = value[1:-1]
+
+    try:
+        ipaddress.IPv6Address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _format_hostname_for_url(hostname):
+    ''' Ensure IPv6 literals are wrapped in URL brackets '''
+    if hostname and hostname.startswith('[') and hostname.endswith(']'):
+        return hostname
+
+    if _is_ipv6_literal(hostname):
+        return '[%s]' % hostname
+
+    return hostname
+
+
+def _normalize_url_ipv6(url):
+    ''' Normalize IPv6 host notation in URL strings '''
+    # Python 3.13+ validates bracketed netloc syntax in urlparse/urlsplit.
+    # Hostname expansion patterns like "cas-server-[1,2,3].com" are not
+    # URL IPv6 syntax and can raise ValueError here; leave them untouched so
+    # _expand_url can process them later.
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+
+    if not parsed.scheme or not parsed.netloc:
+        return url
+
+    netloc = parsed.netloc
+    auth = ''
+    hostport = netloc
+
+    if '@' in netloc:
+        auth, hostport = netloc.rsplit('@', 1)
+
+    # Bracketed IPv6 is already in canonical URL form.
+    if hostport.startswith('['):
+        return url
+
+    # Only candidates with multiple colons can be unbracketed IPv6.
+    if hostport.count(':') < 2:
+        return url
+
+    normalized_hostport = None
+
+    if _is_ipv6_literal(hostport):
+        normalized_hostport = _format_hostname_for_url(hostport)
+    else:
+        host, sep, maybe_port = hostport.rpartition(':')
+        if sep and maybe_port.isdigit() and _is_ipv6_literal(host):
+            normalized_hostport = '%s:%s' % (_format_hostname_for_url(host), maybe_port)
+
+    if normalized_hostport is None:
+        return url
+
+    normalized_netloc = normalized_hostport
+    if auth:
+        normalized_netloc = '%s@%s' % (auth, normalized_hostport)
+
+    return parsed._replace(netloc=normalized_netloc).geturl()
 
 
 @six.python_2_unicode_compatible
@@ -263,6 +338,19 @@ class CAS(object):
         out = []
 
         for item in url:
+            # Bracketed IPv6 hosts are valid URL syntax, not expansion groups.
+            try:
+                parsed = urlparse(item)
+            except ValueError:
+                # Keep non-URL expansion patterns as-is and let bracket
+                # expansion logic below handle them.
+                parsed = None
+            if parsed is not None and parsed.netloc and '[' in parsed.netloc and \
+                    ']' in parsed.netloc and \
+                    _is_ipv6_literal(parsed.hostname):
+                out.append(item)
+                continue
+
             parts = [x for x in re.split(r'(?:\[|\])', item) if x]
 
             for i, part in enumerate(parts):
@@ -306,9 +394,9 @@ class CAS(object):
         new_hostname = []
         for name in hostname:
             if not re.match(r'^\w+://', hostname[0]):
-                new_hostname.append('%s://%s' % (protocol, name))
+                new_hostname.append(_normalize_url_ipv6('%s://%s' % (protocol, name)))
             else:
-                new_hostname.append(name)
+                new_hostname.append(_normalize_url_ipv6(name))
 
         hostname = cls._expand_url(new_hostname)
         urlp = urlparse(hostname[0])
@@ -341,7 +429,7 @@ class CAS(object):
         if protocol.startswith('http'):
             urls = []
             for name in hostname:
-                url = '%s://%s:%s' % (protocol, name, port)
+                url = '%s://%s:%s' % (protocol, _format_hostname_for_url(name), port)
                 if path:
                     url = '%s/%s' % (url, re.sub(r'^/+', r'', path))
                 urls.append(url)
@@ -350,7 +438,9 @@ class CAS(object):
                          "url='%s' username=%s", urls, username)
 
         else:
-            hostname = ' '.join(hostname)
+            # Keep IPv4 / DNS hostnames unchanged, but wrap IPv6 literals in
+            # brackets for consistent host formatting across protocols.
+            hostname = ' '.join([_format_hostname_for_url(x) for x in hostname])
             logger.debug('Distilled connection parameters: '
                          "hostname='%s' port=%s, username=%s, protocol=%s",
                          hostname, port, username, protocol)
@@ -706,7 +796,16 @@ class CAS(object):
     @classmethod
     def _detect_protocol(cls, hostname, port, protocol=None, timeout=3):
         '''
-        Detect the protocol type for the given host and port
+        Detect the protocol type for the given host and port.
+
+        Supports both IPv4 addresses / hostnames and IPv6 address literals.
+        IPv6 addresses may be supplied bare (e.g. '2001:db8::1') or with
+        the surrounding brackets required by URL syntax
+        (e.g. '[2001:db8::1]').  Internally the function selects
+        'socket.AF_INET6' and a 4-tuple connect address for IPv6 hosts,
+        while retaining the original 'socket.AF_INET' 2-tuple path for
+        IPv4 and hostname inputs.  The HTTP 'Host' header is bracketed
+        for IPv6 addresses as required by RFC 2732.
 
         Parameters
         ----------
@@ -731,6 +830,12 @@ class CAS(object):
         if isinstance(hostname, six.string_types):
             hostname = re.split(r'\s+', hostname.strip())
 
+        # Normalise each entry: strip brackets from IPv6 literals so that the
+        # per-host IPv6 detection logic works consistently whether the caller
+        # supplied "[2001:db8::1]" or "2001:db8::1".
+        hostname = [h.strip('[]') if _is_ipv6_literal(h.strip('[]')) else h
+                    for h in hostname]
+
         if protocol != 'auto':
             logger.debug('Protocol specified explicitly: %s' % protocol)
 
@@ -751,13 +856,41 @@ class CAS(object):
 
                 logger.debug('Attempting protocol auto-detect on %s:%s', host, port)
 
-                def check_cas_protocol():
-                    ''' Test port for CAS (binary) support '''
+                # Determine the correct socket address family based on whether the
+                # host is an IPv6 address literal. IPv6 addresses must use
+                # AF_INET6 so the OS routes the connection correctly.
+                # socket.connect() for AF_INET6 expects a 4-tuple:
+                # (host, port, flowinfo, scope_id)
+                # where host must be the bare address string (no brackets).
+                # For AF_INET the connect tuple is just (host, port).
+                if _is_ipv6_literal(host):
+                    # IPv6: use AF_INET6 and strip any surrounding brackets from
+                    # the address before passing it to socket.connect().
+                    _sock_family = socket.AF_INET6
+                    _connect_host = host.strip('[]')
+                    # Build the HTTP Host header value with brackets around the
+                    # IPv6 address, as required by RFC 2732.
+                    _http_host_header = '[%s]' % _connect_host
+                else:
+                    # IPv4 / hostname: standard AF_INET path.
+                    _sock_family = socket.AF_INET
+                    _connect_host = host
+                    _http_host_header = host
+
+                def check_cas_protocol(sock_family=_sock_family,
+                                       connect_host=_connect_host):
+                    ''' Test port for CAS (binary) support (IPv4 and IPv6) '''
                     proto = None
                     try:
-                        cas_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        # Create socket with the appropriate address family so
+                        # that IPv6 hosts are reached via AF_INET6.
+                        cas_socket = socket.socket(sock_family, socket.SOCK_STREAM)
                         cas_socket.settimeout(timeout)
-                        cas_socket.connect((host, port))
+                        # AF_INET6 connect requires a 4-tuple; AF_INET uses a 2-tuple.
+                        if sock_family == socket.AF_INET6:
+                            cas_socket.connect((connect_host, port, 0, 0))
+                        else:
+                            cas_socket.connect((connect_host, port))
                         cas_socket.sendall(bytearray([0, 0x53, 0x41, 0x43,
                                                       0x10, 0, 0, 0, 0, 0, 0, 0,
                                                       0x10, 0, 0, 0,
@@ -775,18 +908,28 @@ class CAS(object):
                         cas_socket.close()
                         out.put(proto)
 
-                def check_https_protocol():
-                    ''' Test port for HTTPS support '''
+                def check_https_protocol(sock_family=_sock_family,
+                                         connect_host=_connect_host,
+                                         http_host_header=_http_host_header):
+                    ''' Test port for HTTPS support (IPv4 and IPv6) '''
                     proto = None
                     try:
-                        ssl_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        # Create socket with the appropriate address family so
+                        # that IPv6 hosts are reached via AF_INET6.
+                        ssl_socket = socket.socket(sock_family, socket.SOCK_STREAM)
                         ssl_socket.settimeout(timeout)
                         ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+                        # server_hostname must be the plain host string (no brackets).
                         ssl_conn = ssl_context.wrap_socket(ssl_socket,
-                                                           server_hostname=host)
-                        ssl_conn.connect((host, port))
+                                                           server_hostname=connect_host)
+                        # AF_INET6 connect requires a 4-tuple.
+                        if sock_family == socket.AF_INET6:
+                            ssl_conn.connect((connect_host, port, 0, 0))
+                        else:
+                            ssl_conn.connect((connect_host, port))
+                        # RFC 2732: IPv6 address in the Host header must be bracketed.
                         ssl_conn.write(('GET /cas HTTP/1.1\r\n'
-                                        + ('Host: %s\r\n' % host)
+                                        + ('Host: %s\r\n' % http_host_header)
                                         + 'Connection: close\r\n'
                                         + 'User-Agent: Python-SWAT\r\n'
                                         + 'Cache-Control: no-cache\r\n\r\n')
@@ -803,16 +946,25 @@ class CAS(object):
                         ssl_socket.close()
                         out.put(proto)
 
-                def check_http_protocol():
-                    ''' Test port for HTTP support '''
+                def check_http_protocol(sock_family=_sock_family,
+                                        connect_host=_connect_host,
+                                        http_host_header=_http_host_header):
+                    ''' Test port for HTTP support (IPv4 and IPv6) '''
                     proto = None
                     try:
-                        http_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        # Create socket with the appropriate address family so
+                        # that IPv6 hosts are reached via AF_INET6.
+                        http_socket = socket.socket(sock_family, socket.SOCK_STREAM)
                         http_socket.settimeout(timeout)
-                        http_socket.connect((host, port))
+                        # AF_INET6 connect requires a 4-tuple.
+                        if sock_family == socket.AF_INET6:
+                            http_socket.connect((connect_host, port, 0, 0))
+                        else:
+                            http_socket.connect((connect_host, port))
 
+                        # RFC 2732: IPv6 address in the Host header must be bracketed.
                         http_socket.send(('GET /cas HTTP/1.1\r\n'
-                                          + ('Host: %s\r\n' % host)
+                                          + ('Host: %s\r\n' % http_host_header)
                                           + 'Connection: close\r\n'
                                           + 'User-Agent: Python-SWAT\r\n'
                                           + 'Cache-Control: no-cache\r\n\r\n')
