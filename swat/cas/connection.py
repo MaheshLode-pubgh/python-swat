@@ -263,6 +263,9 @@ class CAS(object):
         Authorization code from SASLogon used to retrieve an OAuth token.
     pkce : boolean, optional
         Use Proof Key for Code Exchange to obtain the Authorization code
+    tenant_id : string, optional
+        Tenant ID for the OAuth token request. This parameter is only
+        required if the CAS server is configured in a multi-tenant environment.
     **kwargs : any, optional
         Arbitrary keyword arguments used for internal purposes only.
 
@@ -447,7 +450,7 @@ class CAS(object):
     def __init__(self, hostname=None, port=None, username=None, password=None,
                  session=None, locale=None, nworkers=None, name=None,
                  authinfo=None, protocol=None, path=None, ssl_ca_list=None,
-                 authcode=None, pkce=False, **kwargs):
+                 authcode=None, pkce=False, tenant_id=None, **kwargs):
 
         # Filter session options allowed as parameters
         _kwargs = {}
@@ -497,6 +500,8 @@ class CAS(object):
             pkce = pkce or cf.get_option('cas.pkce')
             # Check for authcode authentication
             authcode = authcode or cf.get_option('cas.authcode')
+            tenant_id = tenant_id or cf.get_option('cas.tenant_id')
+
             if protocol in ['http', 'https'] and (authcode or pkce):
                 username = None
                 verifystring = None
@@ -509,7 +514,8 @@ class CAS(object):
                     authcode, verifystring = type(self)._get_authcode(url=hostname)
                 # Get the OAuth token from SASLogon
                 password = type(self)._get_token(authcode=authcode, url=hostname,
-                                                 verifystring=verifystring, pkce=pkce)
+                                                 verifystring=verifystring, pkce=pkce,
+                                                 tenant_id=tenant_id)
 
         # Create error handler
         try:
@@ -645,7 +651,7 @@ class CAS(object):
     @classmethod
     def _get_token(cls, username=None, password=None, authcode=None,
                    client_id=None, client_secret=None, url=None,
-                   verifystring=None, pkce=False):
+                   verifystring=None, pkce=False, tenant_id=None):
         ''' Retrieve token from Viya installation '''
         from .rest.connection import _print_request, _setup_ssl
 
@@ -660,10 +666,16 @@ class CAS(object):
 
             authcode = authcode or cf.get_option('cas.authcode')
             pkce = pkce or cf.get_option('cas.pkce')
-
+            tenant_id = tenant_id or cf.get_option('cas.tenant_id')
             if authcode:
                 client_secret = client_secret or cf.get_option('cas.client_secret') or ''
-
+                if tenant_id:
+                    logger.debug('Using tenant_id for OAuth token request: %s', tenant_id)
+                    req_sess.headers.update({'SAS-Tenant-Id': tenant_id})
+                else:
+                    logger.debug('No tenant_id provided for OAuth token request; '
+                                 'continuing without SAS-Tenant-Id header '
+                                 '(expected for single-tenant deployments).')
                 if pkce:
                     if verifystring is None:
                         raise SWATError('A code verifier must be supplied for pkce')

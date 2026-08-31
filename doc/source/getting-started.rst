@@ -367,6 +367,25 @@ The pkce parameter can also be specified using one of the following environment 
 - CASPKCE
 - VIYAPKCE
 
+For multi-tenant deployments, specify the tenant UUID using the tenant_id parameter
+in the :class:`CAS` constructor when obtaining OAuth tokens with ``authcode`` or ``pkce=True``.
+
+.. ipython:: python
+   :verbatim:
+
+   conn = swat.CAS('https://my-cas-host.com:443/cas-shared-default-http/',
+                   authcode='...',
+                   tenant_id='tenant-uuid')
+
+The tenant UUID can also be specified using one of the following environment variables:
+
+- CAS_TENANT_ID
+- CAS_TENANT_UUID
+
+When ``tenant_id`` is specified, SWAT includes the ``SAS-Tenant-Id`` header on the
+``/SASLogon/oauth/token`` request. In non-multi-tenant deployments, leave ``tenant_id``
+unset and OAuth token exchange behavior remains unchanged.
+
 Kerberos
 ~~~~~~~~~~~~~~~~~~~~~
 
